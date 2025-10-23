@@ -17,25 +17,15 @@ import sys
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
 import seaborn as sns
+from utils.data_loader import load_and_merge_data
+from utils.preprocessing import (
+    filter_age, map_sex, calculate_sbp, process_anti_htn_meds,
+    process_statin, process_diabetes, process_smoking
+)
 
-def load_and_merge_data(data_path: Path):
-    """Loads and merges the necessary NHANES data files for a specific cycle."""
-    
-    year_config = {
-        '2021-2023': {'suffix': '_L', 'bpx_file': 'BPXO_L.csv', 'weight_col': 'wtmec2yr'},
-        '2017-2018': {'suffix': '_J', 'bpx_file': 'BPXO_J.csv', 'weight_col': 'wtmec2yr'},
-        '2015-2016': {'suffix': '_I', 'bpx_file': 'BPX_I.csv', 'weight_col': 'wtmec2yr'},
-    }
-    
-    year = data_path.name
-    config = year_config.get(year)
-    if not config:
-        print(f"Warning: No configuration found for {year}. Skipping.")
-        return None
-        
-    suffix = config['suffix']
-    
-    datasets = {
+def get_datasets(suffix: str, config: dict):
+    """Returns a dictionary of datasets for the healthy comparator analysis."""
+    return {
         "demo": (f"DEMO{suffix}.csv", ["seqn", "riagendr", "ridageyr", config['weight_col']]),
         "bpx": (config['bpx_file'], ["seqn", "bpxosy1", "bpxosy2", "bpxosy3"]),
         "bpq": (f"BPQ{suffix}.csv", ["seqn", "bpq150", "bpq101d"]),
@@ -45,55 +35,20 @@ def load_and_merge_data(data_path: Path):
         "smq": (f"SMQ{suffix}.csv", ["seqn", "smq040"]),
         "mcq": (f"MCQ{suffix}.csv", ["seqn", "mcq300c"]),
     }
-    
-    df_merged = None
-    
-    for name, (filename, cols) in datasets.items():
-        file_path = data_path / filename
-        try:
-            df = pd.read_csv(file_path, usecols=cols)
-            df.columns = [c.lower() for c in df.columns]
-            
-            if df_merged is None:
-                df_merged = df
-            else:
-                df_merged = pd.merge(df_merged, df, on="seqn", how="left")
-        except FileNotFoundError:
-            print(f"Warning: {filename} not found. Skipping.")
-        except ValueError as e:
-            print(f"Warning: Could not read {filename}. Error: {e}. Skipping.")
-
-    df_merged['cycle'] = year
-    return df_merged
 
 def preprocess_data(df: pd.DataFrame):
     """Preprocesses and cleans the merged NHANES data."""
-    
-    # Age filter (30-79 years)
-    df = df[df['ridageyr'].between(30, 79)].copy()
-    
-    # Sex: 1 -> 'male', 2 -> 'female'
-    df['sex'] = df['riagendr'].map({1: 'male', 2: 'female'})
-    
-    # SBP: average of the 3 readings
-    sbp_cols = ['bpxosy1', 'bpxosy2', 'bpxosy3']
-    df['sbp'] = df[sbp_cols].mean(axis=1)
-    
-    # Anti-hypertensive meds: 1 -> True, otherwise False.
-    df['anti_htn_meds'] = df['bpq150'].fillna(2) == 1
-
-    # Statin: 1 -> True, otherwise False.
-    df['statin'] = df['bpq101d'].fillna(2) == 1
+    df = filter_age(df)
+    df = map_sex(df)
+    df = calculate_sbp(df)
+    df = process_anti_htn_meds(df, fill_na_value=2)
+    df = process_statin(df, fill_na_value=2)
+    df = process_diabetes(df, fill_na_value=2)
+    df = process_smoking(df, fill_na_value=3)
 
     # Total Cholesterol
     df.rename(columns={'lbxtc': 'total_cholesterol'}, inplace=True)
 
-    # Diabetes: 1 (Yes) or 3 (Borderline) -> True.
-    df['t2dm'] = df['diq010'].fillna(2).isin([1, 3])
-
-    # Smoking: 1 (every day) or 2 (some days) -> True.
-    df['smoking'] = df['smq040'].fillna(3).isin([1, 2])
-    
     # Family history of MI: 1 -> True
     if 'mcq300c' in df.columns:
         df['family_history_mi'] = df['mcq300c'].fillna(2) == 1
@@ -115,7 +70,9 @@ def preprocess_data(df: pd.DataFrame):
         'family_history_mi': 'family_history_mi',
         'cycle': 'cycle'
     }
-    df_final = df[list(final_cols.keys())].rename(columns=final_cols)
+    # Use a list of available columns to avoid KeyError
+    available_cols = [col for col in final_cols.keys() if col in df.columns]
+    df_final = df[available_cols].rename(columns=final_cols)
     
     # Drop rows with any remaining missing values in key modeling columns
     df_final.dropna(subset=['age', 'sex', 'sbp', 'total_cholesterol', 'weight'], inplace=True)
@@ -176,7 +133,7 @@ def get_comparator_models_and_prevalences(healthy_df: pd.DataFrame):
 
 def generate_comparator_table(sbp_model: LinearRegression, chol_model: LinearRegression, prevalences: dict):
     """Generates a table of healthy comparator values for ages 30-79."""
-    ages = np.arange(30, 80)
+    ages = np.arange(30, 79)
     sexes = ['male', 'female']
     
     results = []
@@ -246,7 +203,17 @@ def main():
     for year_dir in year_dirs:
         data_path = data_root / year_dir
         print(f"Processing data for {year_dir}...")
-        df_merged = load_and_merge_data(data_path)
+        
+        year_config = {
+            '2021-2023': {'suffix': '_L', 'bpx_file': 'BPXO_L.csv', 'weight_col': 'wtmec2yr'},
+            '2017-2018': {'suffix': '_J', 'bpx_file': 'BPXO_J.csv', 'weight_col': 'wtmec2yr'},
+            '2015-2016': {'suffix': '_I', 'bpx_file': 'BPX_I.csv', 'weight_col': 'wtmec2yr'},
+        }
+        config = year_config.get(data_path.name)
+        suffix = config['suffix']
+        datasets = get_datasets(suffix, config)
+
+        df_merged = load_and_merge_data(data_path, datasets)
         if df_merged is not None:
             all_dfs.append(df_merged)
 

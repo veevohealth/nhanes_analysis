@@ -34,25 +34,15 @@ except ImportError:
 # Assuming heart_age_service is in the path.
 # This might need adjustment based on where you run the script from.
 from app.services.heart_age_service import Profile, prevent_heart_age, prevent_ascvd_risk_10y_base
+from utils.data_loader import load_and_merge_data
+from utils.preprocessing import (
+    filter_age, map_sex, calculate_sbp, process_anti_htn_meds,
+    process_statin, process_diabetes, process_smoking
+)
 
-def load_and_merge_data(data_path: Path):
-    """Loads and merges the necessary NHANES data files for a specific cycle."""
-    
-    year_config = {
-        '2021-2023': {'suffix': '_L', 'bpx_file': 'BPXO_L.csv', 'weight_col': 'wtmec2yr'},
-        '2017-2018': {'suffix': '_J', 'bpx_file': 'BPXO_J.csv', 'weight_col': 'wtmec2yr'},
-        '2015-2016': {'suffix': '_I', 'bpx_file': 'BPX_I.csv', 'weight_col': 'wtmec2yr'},
-    }
-    
-    year = data_path.name
-    config = year_config.get(year)
-    if not config:
-        print(f"Warning: No configuration found for {year}. Skipping.")
-        return None
-        
-    suffix = config['suffix']
-    
-    datasets = {
+def get_datasets(suffix: str, config: dict):
+    """Returns a dictionary of datasets for the heart age analysis."""
+    return {
         "demo": (f"DEMO{suffix}.csv", ["seqn", "riagendr", "ridageyr", config['weight_col']]),
         "bpx": (config['bpx_file'], ["seqn", "bpxosy1", "bpxosy2", "bpxosy3"]),
         "bpq": (f"BPQ{suffix}.csv", ["seqn", "bpq150", "bpq101d"]),
@@ -62,55 +52,25 @@ def load_and_merge_data(data_path: Path):
         "smq": (f"SMQ{suffix}.csv", ["seqn", "smq040"]),
         "biopro": (f"BIOPRO{suffix}.csv", ["seqn", "lbxscr"]),
     }
-    
-    df_merged = None
-    
-    for name, (filename, cols) in datasets.items():
-        file_path = data_path / filename
-        try:
-            df = pd.read_csv(file_path, usecols=cols)
-            df.columns = [c.lower() for c in df.columns]
-            
-            if df_merged is None:
-                df_merged = df
-            else:
-                df_merged = pd.merge(df_merged, df, on="seqn", how="left")
-        except FileNotFoundError:
-            print(f"Warning: {filename} not found. Skipping.")
-        except ValueError as e:
-            print(f"Warning: Could not read {filename}. Error: {e}. Skipping.")
-
-    df_merged['cycle'] = year
-    return df_merged
 
 def preprocess_data(df: pd.DataFrame):
     """Preprocesses and cleans the merged NHANES data."""
     
-    # Age filter (30-79 years)
-    df = df[df['ridageyr'].between(30, 79)].copy()
-    
-    # Sex: 1 -> 'male', 2 -> 'female'
-    df['sex'] = df['riagendr'].map({1: 'male', 2: 'female'})
-    
-    # SBP: average of the 3 readings
-    sbp_cols = ['bpxosy1', 'bpxosy2', 'bpxosy3']
-    df['sbp'] = df[sbp_cols].mean(axis=1)
-    
-    # Anti-hypertensive meds: 1 -> True, otherwise False. Missing values are treated as False.
-    df['anti_htn_meds'] = df['bpq150'].fillna(0) == 1
+    # Handle different weight column names
+    if 'wtmec4yr' in df.columns and 'wtmec2yr' not in df.columns:
+        df.rename(columns={'wtmec4yr': 'wtmec2yr'}, inplace=True)
+
+    df = filter_age(df)
+    df = map_sex(df)
+    df = calculate_sbp(df)
+    df = process_anti_htn_meds(df)
+    df = process_statin(df)
+    df = process_diabetes(df)
+    df = process_smoking(df)
 
     # Non-HDL cholesterol
     df['non_hdl_c'] = df['lbxtc'] - df['lbdhdd']
     df.rename(columns={'lbdhdd': 'hdl_c'}, inplace=True)
-
-    # Diabetes: 1 (Yes) or 3 (Borderline) -> True. Missing values are treated as False.
-    df['t2dm'] = df['diq010'].fillna(0).isin([1, 3])
-
-    # Smoking: 1 or 2 -> True, otherwise False. Missing values are treated as False.
-    df['smoking'] = df['smq040'].fillna(0).isin([1, 2])
-
-    # Statin: 1 -> True, otherwise False. Missing values are treated as False.
-    df['statin'] = df['bpq101d'].fillna(0) == 1
 
     # eGFR calculation (CKD-EPI 2021)
     # https://www.hepatitisb.uw.edu/page/clinical-calculators/mdrd
@@ -269,7 +229,17 @@ def main():
     for year_dir in year_dirs:
         data_path = data_root / year_dir
         print(f"Processing data for {year_dir}...")
-        df_merged = load_and_merge_data(data_path)
+
+        year_config = {
+            '2021-2023': {'suffix': '_L', 'bpx_file': 'BPXO_L.csv', 'weight_col': 'wtmec2yr'},
+            '2017-2018': {'suffix': '_J', 'bpx_file': 'BPXO_J.csv', 'weight_col': 'wtmec2yr'},
+            '2015-2016': {'suffix': '_I', 'bpx_file': 'BPX_I.csv', 'weight_col': 'wtmec2yr'},
+        }
+        config = year_config.get(data_path.name)
+        suffix = config['suffix']
+        datasets = get_datasets(suffix, config)
+
+        df_merged = load_and_merge_data(data_path, datasets)
         if df_merged is not None:
             all_dfs.append(df_merged)
 
