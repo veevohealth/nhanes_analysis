@@ -38,7 +38,7 @@ def get_datasets(suffix: str, config: dict):
 
 def preprocess_data(df: pd.DataFrame):
     """Preprocesses and cleans the merged NHANES data."""
-    df = filter_age(df)
+    df = filter_age(df, min_age=18, max_age=79)
     df = map_sex(df)
     df = calculate_sbp(df)
     df = process_anti_htn_meds(df, fill_na_value=2)
@@ -133,7 +133,7 @@ def get_comparator_models_and_prevalences(healthy_df: pd.DataFrame):
 
 def generate_comparator_table(sbp_model: LinearRegression, chol_model: LinearRegression, prevalences: dict):
     """Generates a table of healthy comparator values for ages 30-79."""
-    ages = np.arange(30, 79)
+    ages = np.arange(18, 80)
     sexes = ['male', 'female']
     
     results = []
