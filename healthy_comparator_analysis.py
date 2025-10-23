@@ -34,6 +34,7 @@ def get_datasets(suffix: str, config: dict):
         "diq": (f"DIQ{suffix}.csv", ["seqn", "diq010"]),
         "smq": (f"SMQ{suffix}.csv", ["seqn", "smq040"]),
         "mcq": (f"MCQ{suffix}.csv", ["seqn", "mcq300c"]),
+        "bmx": (f"BMX{suffix}.csv", ["seqn", "bmxwt", "bmxht"]),
     }
 
 def preprocess_data(df: pd.DataFrame):
@@ -46,8 +47,16 @@ def preprocess_data(df: pd.DataFrame):
     df = process_diabetes(df, fill_na_value=2)
     df = process_smoking(df, fill_na_value=3)
 
-    # Total Cholesterol
-    df.rename(columns={'lbxtc': 'total_cholesterol'}, inplace=True)
+    # Total Cholesterol & HDL
+    df.rename(columns={'lbxtc': 'total_cholesterol', 'lbdhdd': 'hdl_c'}, inplace=True)
+
+    # BMI Calculation
+    # Formula: weight (kg) / (height (m))^2
+    # Height is in cm, so convert to m
+    if 'bmxwt' in df.columns and 'bmxht' in df.columns:
+        df['bmi'] = df['bmxwt'] / ((df['bmxht'] / 100) ** 2)
+    else:
+        df['bmi'] = np.nan
 
     # Family history of MI: 1 -> True
     if 'mcq300c' in df.columns:
@@ -63,6 +72,8 @@ def preprocess_data(df: pd.DataFrame):
         'sex': 'sex',
         'sbp': 'sbp',
         'total_cholesterol': 'total_cholesterol',
+        'hdl_c': 'hdl_c',
+        'bmi': 'bmi',
         'anti_htn_meds': 'anti_htn_meds',
         'statin': 'statin',
         't2dm': 't2dm',
@@ -75,25 +86,43 @@ def preprocess_data(df: pd.DataFrame):
     df_final = df[available_cols].rename(columns=final_cols)
     
     # Drop rows with any remaining missing values in key modeling columns
-    df_final.dropna(subset=['age', 'sex', 'sbp', 'total_cholesterol', 'weight'], inplace=True)
+    df_final.dropna(subset=['age', 'sex', 'sbp', 'total_cholesterol', 'hdl_c', 'bmi', 'weight'], inplace=True)
     
     return df_final
 
 def define_healthy_population(df: pd.DataFrame):
-    """Filters for the 'generally healthy' population (no diabetes, non-smoker)."""
-    return df[(df['t2dm'] == False) & (df['smoking'] == False)].copy()
+    """
+    Filters for the 'generally healthy' population.
+    - No diabetes
+    - Non-smoker
+    - Not obese (BMI < 30)
+    """
+    return df[
+        (df['t2dm'] == False) & 
+        (df['smoking'] == False) &
+        (df['bmi'] < 30)
+    ].copy()
 
 def get_comparator_models_and_prevalences(healthy_df: pd.DataFrame):
     """
     Trains regression models for SBP and total cholesterol, and calculates
     prevalences of medication use in the healthy population.
     """
-    # SBP model (trained on healthy individuals not on anti-HTN meds)
-    sbp_train_df = healthy_df[healthy_df['anti_htn_meds'] == False].copy()
+    # Define a low-risk subgroup for training models (no HTN meds, SBP < 140)
+    low_risk_df = healthy_df[
+        (healthy_df['anti_htn_meds'] == False) &
+        (healthy_df['sbp'] < 140)
+    ].copy()
+
+    # SBP model
+    sbp_train_df = low_risk_df.copy()
     sbp_train_df['is_male'] = (sbp_train_df['sex'] == 'male').astype(int)
     sbp_train_df['age_sex_interaction'] = sbp_train_df['age'] * sbp_train_df['is_male']
+    # Spline for women post-menopause, average age 52.
+    # Source: https://my.clevelandclinic.org/health/diseases/21841-menopause
+    sbp_train_df['female_age_spline'] = (1 - sbp_train_df['is_male']) * np.maximum(0, sbp_train_df['age'] - 52)
     
-    X_sbp = sbp_train_df[['age', 'is_male', 'age_sex_interaction']]
+    X_sbp = sbp_train_df[['age', 'is_male', 'age_sex_interaction', 'female_age_spline']]
     y_sbp = sbp_train_df['sbp']
     weights_sbp = sbp_train_df['weight']
     
@@ -101,10 +130,10 @@ def get_comparator_models_and_prevalences(healthy_df: pd.DataFrame):
     sbp_model.fit(X_sbp, y_sbp, sample_weight=weights_sbp)
 
     # Total Cholesterol model
-    chol_train_df = healthy_df.copy()
+    chol_train_df = low_risk_df.copy()
     chol_train_df['is_male'] = (chol_train_df['sex'] == 'male').astype(int)
     chol_train_df['age_sex_interaction'] = chol_train_df['age'] * chol_train_df['is_male']
-    chol_train_df['female_age_spline'] = (1 - chol_train_df['is_male']) * np.maximum(0, chol_train_df['age'] - 55)
+    chol_train_df['female_age_spline'] = (1 - chol_train_df['is_male']) * np.maximum(0, chol_train_df['age'] - 52)
 
     X_chol = chol_train_df[['age', 'is_male', 'age_sex_interaction', 'female_age_spline']]
     y_chol = chol_train_df['total_cholesterol']
@@ -113,6 +142,19 @@ def get_comparator_models_and_prevalences(healthy_df: pd.DataFrame):
     chol_model = LinearRegression()
     chol_model.fit(X_chol, y_chol, sample_weight=weights_chol)
     
+    # HDL Cholesterol model
+    hdl_train_df = low_risk_df.copy()
+    hdl_train_df['is_male'] = (hdl_train_df['sex'] == 'male').astype(int)
+    hdl_train_df['age_sex_interaction'] = hdl_train_df['age'] * hdl_train_df['is_male']
+    hdl_train_df['female_age_spline'] = (1 - hdl_train_df['is_male']) * np.maximum(0, hdl_train_df['age'] - 52)
+
+    X_hdl = hdl_train_df[['age', 'is_male', 'age_sex_interaction', 'female_age_spline']]
+    y_hdl = hdl_train_df['hdl_c']
+    weights_hdl = hdl_train_df['weight']
+    
+    hdl_model = LinearRegression()
+    hdl_model.fit(X_hdl, y_hdl, sample_weight=weights_hdl)
+
     # Prevalences using weighted average
     def weighted_prevalence(df, column, weights_col):
         if df[weights_col].sum() == 0:
@@ -129,9 +171,9 @@ def get_comparator_models_and_prevalences(healthy_df: pd.DataFrame):
         'family_history_mi': prev_fam_hist
     }
 
-    return sbp_model, chol_model, prevalences
+    return sbp_model, chol_model, hdl_model, prevalences
 
-def generate_comparator_table(sbp_model: LinearRegression, chol_model: LinearRegression, prevalences: dict):
+def generate_comparator_table(sbp_model: LinearRegression, chol_model: LinearRegression, hdl_model: LinearRegression, prevalences: dict):
     """Generates a table of healthy comparator values for ages 30-79."""
     ages = np.arange(18, 80)
     sexes = ['male', 'female']
@@ -140,28 +182,29 @@ def generate_comparator_table(sbp_model: LinearRegression, chol_model: LinearReg
     for sex in sexes:
         for age in ages:
             is_male = 1 if sex == 'male' else 0
+            female_age_spline = (1 - is_male) * np.maximum(0, age - 52)
             
             # Predict SBP
-            sbp_features = np.array([age, is_male, age * is_male]).reshape(1, -1)
+            sbp_features = np.array([age, is_male, age * is_male, female_age_spline]).reshape(1, -1)
             pred_sbp = sbp_model.predict(sbp_features)[0]
             
             # Predict Total Cholesterol
-            female_age_spline = (1 - is_male) * np.maximum(0, age - 55)
             chol_features = np.array([age, is_male, age * is_male, female_age_spline]).reshape(1, -1)
             pred_chol = chol_model.predict(chol_features)[0]
             
-            # HDL
-            hdl = 45 if sex == 'male' else 55
+            # Predict HDL
+            hdl_features = np.array([age, is_male, age * is_male, female_age_spline]).reshape(1, -1)
+            pred_hdl = hdl_model.predict(hdl_features)[0]
             
             # Non-HDL Cholesterol
-            non_hdl_c = pred_chol - hdl
+            non_hdl_c = pred_chol - pred_hdl
 
             results.append({
                 'age': age,
                 'sex': sex,
                 'healthy_sbp': pred_sbp,
                 'healthy_total_cholesterol': pred_chol,
-                'healthy_hdl_c': hdl,
+                'healthy_hdl_c': pred_hdl,
                 'healthy_non_hdl_c': non_hdl_c,
                 'prevalence_anti_htn_meds': prevalences['anti_htn_meds'],
                 'prevalence_statin': prevalences['statin'],
@@ -191,6 +234,72 @@ def create_sbp_plot(df: pd.DataFrame):
     plt.tight_layout()
     plt.savefig("healthy_sbp_by_age.png", bbox_inches='tight')
     print("Plot saved to healthy_sbp_by_age.png")
+
+def create_total_cholesterol_plot(df: pd.DataFrame):
+    """Creates a line plot of healthy total cholesterol by age and sex."""
+    
+    sns.set_style("whitegrid")
+    g = sns.FacetGrid(df, col="sex", height=6, aspect=1.2, col_order=['female', 'male'])
+    g.map(sns.lineplot, "age", "healthy_total_cholesterol", color='mediumseagreen')
+
+    # Customizing the plot
+    for i, ax in enumerate(g.axes.flat):
+        sex = ['Women', 'Men'][i]
+        ax.set_title(f'{sex}')
+        ax.set_xlabel("Age, y")
+        if i == 0:
+            ax.set_ylabel("Predicted Healthy Total Cholesterol, mg/dL")
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+    g.fig.suptitle("Predicted Healthy Total Cholesterol by Age and Sex (NHANES 2015-2023)", y=1.03)
+    
+    plt.tight_layout()
+    plt.savefig("healthy_total_cholesterol_by_age.png", bbox_inches='tight')
+    print("Plot saved to healthy_total_cholesterol_by_age.png")
+
+def create_hdl_cholesterol_plot(df: pd.DataFrame):
+    """Creates a line plot of healthy HDL cholesterol by age and sex."""
+    
+    sns.set_style("whitegrid")
+    g = sns.FacetGrid(df, col="sex", height=6, aspect=1.2, col_order=['female', 'male'])
+    g.map(sns.lineplot, "age", "healthy_hdl_c", color='goldenrod')
+
+    # Customizing the plot
+    for i, ax in enumerate(g.axes.flat):
+        sex = ['Women', 'Men'][i]
+        ax.set_title(f'{sex}')
+        ax.set_xlabel("Age, y")
+        if i == 0:
+            ax.set_ylabel("Predicted Healthy HDL Cholesterol, mg/dL")
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+    g.fig.suptitle("Predicted Healthy HDL Cholesterol by Age and Sex (NHANES 2015-2023)", y=1.03)
+    
+    plt.tight_layout()
+    plt.savefig("healthy_hdl_cholesterol_by_age.png", bbox_inches='tight')
+    print("Plot saved to healthy_hdl_cholesterol_by_age.png")
+
+def create_non_hdl_cholesterol_plot(df: pd.DataFrame):
+    """Creates a line plot of healthy non-HDL cholesterol by age and sex."""
+    
+    sns.set_style("whitegrid")
+    g = sns.FacetGrid(df, col="sex", height=6, aspect=1.2, col_order=['female', 'male'])
+    g.map(sns.lineplot, "age", "healthy_non_hdl_c", color='darkorchid')
+
+    # Customizing the plot
+    for i, ax in enumerate(g.axes.flat):
+        sex = ['Women', 'Men'][i]
+        ax.set_title(f'{sex}')
+        ax.set_xlabel("Age, y")
+        if i == 0:
+            ax.set_ylabel("Predicted Healthy Non-HDL Cholesterol, mg/dL")
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+    g.fig.suptitle("Predicted Healthy Non-HDL Cholesterol by Age and Sex (NHANES 2015-2023)", y=1.03)
+    
+    plt.tight_layout()
+    plt.savefig("healthy_non_hdl_cholesterol_by_age.png", bbox_inches='tight')
+    print("Plot saved to healthy_non_hdl_cholesterol_by_age.png")
 
 def main():
     """Main function to run the analysis."""
@@ -231,16 +340,19 @@ def main():
         df_healthy = define_healthy_population(df_processed)
         print(f"Defined 'healthy' population: {len(df_healthy)} individuals.")
 
-        sbp_model, chol_model, prevalences = get_comparator_models_and_prevalences(df_healthy)
+        sbp_model, chol_model, hdl_model, prevalences = get_comparator_models_and_prevalences(df_healthy)
         print("Trained models and calculated prevalences successfully.")
 
-        comparator_table = generate_comparator_table(sbp_model, chol_model, prevalences)
+        comparator_table = generate_comparator_table(sbp_model, chol_model, hdl_model, prevalences)
         
         output_filename = 'healthy_comparator_values.csv'
         comparator_table.to_csv(output_filename, index=False)
         print(f"Saved healthy comparator values to {output_filename}")
 
         create_sbp_plot(comparator_table)
+        create_total_cholesterol_plot(comparator_table)
+        create_hdl_cholesterol_plot(comparator_table)
+        create_non_hdl_cholesterol_plot(comparator_table)
 
 if __name__ == "__main__":
     main()
