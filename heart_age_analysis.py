@@ -36,17 +36,31 @@ except ImportError:
 from app.services.heart_age_service import Profile, prevent_heart_age, prevent_ascvd_risk_10y_base
 
 def load_and_merge_data(data_path: Path):
-    """Loads and merges the necessary NHANES data files."""
+    """Loads and merges the necessary NHANES data files for a specific cycle."""
+    
+    year_config = {
+        '2021-2023': {'suffix': '_L', 'bpx_file': 'BPXO_L.csv', 'weight_col': 'wtmec2yr'},
+        '2017-2018': {'suffix': '_J', 'bpx_file': 'BPXO_J.csv', 'weight_col': 'wtmec2yr'},
+        '2015-2016': {'suffix': '_I', 'bpx_file': 'BPX_I.csv', 'weight_col': 'wtmec2yr'},
+    }
+    
+    year = data_path.name
+    config = year_config.get(year)
+    if not config:
+        print(f"Warning: No configuration found for {year}. Skipping.")
+        return None
+        
+    suffix = config['suffix']
     
     datasets = {
-        "demo": ("DEMO_L.csv", ["seqn", "riagendr", "ridageyr", "wtmec2yr"]),
-        "bpx": ("BPXO_L.csv", ["seqn", "bpxosy1", "bpxosy2", "bpxosy3"]),
-        "bpq": ("BPQ_L.csv", ["seqn", "bpq150", "bpq101d"]),
-        "tchol": ("TCHOL_L.csv", ["seqn", "lbxtc"]),
-        "hdl": ("HDL_L.csv", ["seqn", "lbdhdd"]),
-        "diq": ("DIQ_L.csv", ["seqn", "diq010"]),
-        "smq": ("SMQ_L.csv", ["seqn", "smq040"]),
-        "biopro": ("BIOPRO_L.csv", ["seqn", "lbxscr"]),
+        "demo": (f"DEMO{suffix}.csv", ["seqn", "riagendr", "ridageyr", config['weight_col']]),
+        "bpx": (config['bpx_file'], ["seqn", "bpxosy1", "bpxosy2", "bpxosy3"]),
+        "bpq": (f"BPQ{suffix}.csv", ["seqn", "bpq150", "bpq101d"]),
+        "tchol": (f"TCHOL{suffix}.csv", ["seqn", "lbxtc"]),
+        "hdl": (f"HDL{suffix}.csv", ["seqn", "lbdhdd"]),
+        "diq": (f"DIQ{suffix}.csv", ["seqn", "diq010"]),
+        "smq": (f"SMQ{suffix}.csv", ["seqn", "smq040"]),
+        "biopro": (f"BIOPRO{suffix}.csv", ["seqn", "lbxscr"]),
     }
     
     df_merged = None
@@ -66,6 +80,7 @@ def load_and_merge_data(data_path: Path):
         except ValueError as e:
             print(f"Warning: Could not read {filename}. Error: {e}. Skipping.")
 
+    df_merged['cycle'] = year
     return df_merged
 
 def preprocess_data(df: pd.DataFrame):
@@ -130,7 +145,8 @@ def preprocess_data(df: pd.DataFrame):
         'statin': 'statin',
         't2dm': 't2dm',
         'smoking': 'smoking',
-        'egfr': 'egfr'
+        'egfr': 'egfr',
+        'cycle': 'cycle'
     }
     df_final = df[list(final_cols.keys())].rename(columns=final_cols)
     
@@ -245,13 +261,27 @@ def main():
     # Get the directory of the current script.
     script_dir = Path(__file__).parent
     # Path to the data directory, assuming it's a sibling of the script's directory.
-    data_path = script_dir / 'data' / '2021-2023'
+    data_root = script_dir / 'data'
     
-    df_merged = load_and_merge_data(data_path)
+    year_dirs = ['2021-2023', '2017-2018', '2015-2016']
     
-    if df_merged is not None:
-        print("Data loaded and merged successfully.")
-        df_processed = preprocess_data(df_merged)
+    all_dfs = []
+    for year_dir in year_dirs:
+        data_path = data_root / year_dir
+        print(f"Processing data for {year_dir}...")
+        df_merged = load_and_merge_data(data_path)
+        if df_merged is not None:
+            all_dfs.append(df_merged)
+
+    if not all_dfs:
+        print("No data was loaded. Exiting.")
+        return
+
+    df_combined = pd.concat(all_dfs, ignore_index=True)
+
+    if df_combined is not None:
+        print("All data loaded and merged successfully.")
+        df_processed = preprocess_data(df_combined)
         print("Data preprocessed successfully.")
         
         df_with_heart_age = calculate_heart_ages(df_processed)
