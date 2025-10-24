@@ -164,10 +164,10 @@ def group_and_aggregate(df: pd.DataFrame):
     df['discordance_category'] = np.select(conditions, categories, default='Other')
 
     # Group and aggregate
-    df_agg = df.groupby(['sex', 'age_group', 'discordance_category'])['weight'].sum().reset_index()
+    df_agg = df.groupby(['sex', 'age_group', 'discordance_category'], observed=False)['weight'].sum().reset_index()
     
-    # Convert to thousands
-    df_agg['population_thousands'] = df_agg['weight'] / 1_000
+    # Convert to millions
+    df_agg['population_millions'] = df_agg['weight'] / 1_000_000
 
     return df_agg
 
@@ -184,7 +184,7 @@ def create_plot(df_agg: pd.DataFrame):
 
     def plot_stacked_bar(data, **kwargs):
         ax = plt.gca()
-        pivot_df = data.pivot(index='age_group', columns='discordance_category', values='population_thousands')
+        pivot_df = data.pivot(index='age_group', columns='discordance_category', values='population_millions')
         pivot_df = pivot_df.reindex(columns=category_order)
         pivot_df.plot(kind='bar', stacked=True, ax=ax, color=colors, width=0.8)
 
@@ -196,11 +196,7 @@ def create_plot(df_agg: pd.DataFrame):
         ax.set_title(f'{chr(65+i)} {sex}')
         ax.set_xlabel("Age group, y")
         if i == 0:
-            ax.set_ylabel("Individuals, No. (thousands)")
-        
-        # Reformat y-axis ticks to be more readable with the "(thousands)" label
-        yticks = ax.get_yticks()
-        ax.set_yticklabels([int(y/1000) for y in yticks])
+            ax.set_ylabel("Individuals, No. (millions)")
         
         ax.tick_params(axis='x', rotation=45)
         ax.legend().set_visible(False) # Remove individual legends
