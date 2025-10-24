@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
+import matplotlib.patches as mpatches
 import sys
 
 # IMPORTANT: Add the path to the beta-app-backend directory so we can import the service
@@ -171,6 +172,88 @@ def group_and_aggregate(df: pd.DataFrame):
 
     return df_agg
 
+
+def compute_fraction_table(df_agg: pd.DataFrame) -> pd.DataFrame:
+    """Compute fraction of adults in each discordance category by age band and sex.
+
+    Returns a wide-format table with rows for age bands and columns for
+    Women/Men across categories (>10 older, 5–10 older, Within 5, >5 younger).
+    """
+    # Include all four categories for the table
+    table_cats = ['>10 y older', '5-10 y older', 'Within 5 y', '>5 y younger']
+    df_filtered = df_agg[df_agg['discordance_category'].isin(table_cats)].copy()
+
+    # Total per sex/age_group for denominator
+    totals = (df_filtered.groupby(['sex', 'age_group'], observed=False)['population_millions']
+              .sum().rename('total')).reset_index()
+    merged = df_filtered.merge(totals, on=['sex', 'age_group'], how='left')
+    merged['fraction'] = np.where(merged['total'] > 0,
+                                  merged['population_millions'] / merged['total'],
+                                  0.0)
+
+    # Pivot to wide per sex and category
+    women = (merged[merged['sex'] == 'female']
+             .pivot(index='age_group', columns='discordance_category', values='fraction')
+             .reindex(columns=table_cats).fillna(0.0))
+    men = (merged[merged['sex'] == 'male']
+           .pivot(index='age_group', columns='discordance_category', values='fraction')
+           .reindex(columns=table_cats).fillna(0.0))
+
+    # Combine into a single wide table with MultiIndex columns
+    # Then flatten to labeled columns matching the paper
+    combined = women.join(men, lsuffix=' (Women)', rsuffix=' (Men)')
+    combined = combined.rename(columns={
+        '>10 y older (Women)': '>10 older (Women)',
+        '5-10 y older (Women)': '5-10 older (Women)',
+        'Within 5 y (Women)': 'Within 5 (Women)',
+        '>5 y younger (Women)': '>5 younger (Women)',
+        '>10 y older (Men)': '>10 older (Men)',
+        '5-10 y older (Men)': '5-10 older (Men)',
+        'Within 5 y (Men)': 'Within 5 (Men)',
+        '>5 y younger (Men)': '>5 younger (Men)'
+    })
+
+    # Round to percentages with one decimal
+    combined_percent = (combined * 100).round(1).reset_index().rename(columns={'age_group': 'Age band'})
+    return combined_percent
+
+
+def write_latex_table_from_fractions(fractions: pd.DataFrame, output_path: str) -> None:
+    """Write a LaTeX tabular with Women/Men across four categories to output_path."""
+    columns = [
+        'Age band',
+        '>10 older (Women)', '5-10 older (Women)', 'Within 5 (Women)', '>5 younger (Women)',
+        '>10 older (Men)', '5-10 older (Men)', 'Within 5 (Men)', '>5 younger (Men)'
+    ]
+    # Ensure all columns exist (missing treated as 0.0)
+    for col in columns:
+        if col not in fractions.columns:
+            if col == 'Age band':
+                continue
+            fractions[col] = 0.0
+
+    with open(output_path, 'w') as f:
+        f.write('\\begin{table}\n')
+        f.write('  \\centering\n')
+        f.write('  \\caption{Fraction of U.S. adults (survey-weighted) by heart-age discordance category, age-band, and sex (NHANES 2015--2023).}\n')
+        f.write('  \\label{tab:discordance-fractions}\n')
+        f.write('  \\begin{tabular}{lcccccccc}\n')
+        f.write('    \\toprule\n')
+        f.write('    & \\multicolumn{4}{c}{Women} & \\multicolumn{4}{c}{Men} \\\\n')
+        f.write('    \\cmidrule(r){2-5} \\cmidrule(r){6-9}\n')
+        f.write('    Age band & $>10$ older & 5--10 older & Within 5 & $>5$ younger & $>10$ older & 5--10 older & Within 5 & $>5$ younger \\\\n')
+        f.write('    \\midrule\n')
+        for _, row in fractions.iterrows():
+            vals = [
+                row['Age band'],
+                f"{row['>10 older (Women)']:.1f}", f"{row['5-10 older (Women)']:.1f}", f"{row['Within 5 (Women)']:.1f}", f"{row['>5 younger (Women)']:.1f}",
+                f"{row['>10 older (Men)']:.1f}", f"{row['5-10 older (Men)']:.1f}", f"{row['Within 5 (Men)']:.1f}", f"{row['>5 younger (Men)']:.1f}"
+            ]
+            f.write('    ' + ' & '.join(vals) + ' \\\\n')
+        f.write('    \\bottomrule\n')
+        f.write('  \\end{tabular}\n')
+        f.write('\\end{table}\n')
+
 def create_plot(df_agg: pd.DataFrame):
     """Creates a stacked bar chart of heart age discordance."""
     
@@ -185,7 +268,7 @@ def create_plot(df_agg: pd.DataFrame):
     def plot_stacked_bar(data, **kwargs):
         ax = plt.gca()
         pivot_df = data.pivot(index='age_group', columns='discordance_category', values='population_millions')
-        pivot_df = pivot_df.reindex(columns=category_order)
+        pivot_df = pivot_df.reindex(columns=category_order).fillna(0)
         pivot_df.plot(kind='bar', stacked=True, ax=ax, color=colors, width=0.8)
 
     g.map_dataframe(plot_stacked_bar)
@@ -201,16 +284,22 @@ def create_plot(df_agg: pd.DataFrame):
         ax.tick_params(axis='x', rotation=45)
         ax.legend().set_visible(False) # Remove individual legends
 
-    # Add a single legend
-    handles, labels = g.axes.flat[0].get_legend_handles_labels()
+    # Add a single fixed legend (ensures all categories shown)
     fig = g.fig
-    fig.legend(handles, labels, title='Mean age discordance', bbox_to_anchor=(0.9, 0.85))
+    legend_handles = [mpatches.Patch(color=c, label=l) for c, l in zip(colors, category_order)]
+    fig.legend(legend_handles, category_order, title='Mean age discordance', bbox_to_anchor=(0.9, 0.85))
     
     fig.suptitle("Discordance Between Chronological Age on NHANES Data", y=1.05)
     
     plt.tight_layout()
-    plt.savefig("heart_age_discordance.png", bbox_inches='tight')
-    print("Plot saved to heart_age_discordance.png")
+    out_root = "heart_age_discordance.png"
+    plt.savefig(out_root, bbox_inches='tight')
+    # Also save into the white paper template media directory if available
+    try:
+        plt.savefig("heart_age_white_paper/media/heart_age_discordance.png", bbox_inches='tight')
+    except Exception:
+        pass
+    print(f"Plot saved to {out_root}")
 
 
 def main():
@@ -256,6 +345,15 @@ def main():
         df_agg = group_and_aggregate(df_with_heart_age)
         print("Data grouped and aggregated successfully.")
         
+        # Save fractions table
+        fractions = compute_fraction_table(df_agg)
+        fractions_out = 'discordance_fractions.csv'
+        fractions.to_csv(fractions_out, index=False)
+        print(f"Saved discordance fractions to {fractions_out}")
+        # Also emit a LaTeX table the paper can input
+        write_latex_table_from_fractions(fractions, 'heart_age_white_paper/discordance_table.tex')
+        print("Wrote LaTeX table to heart_age_white_paper/discordance_table.tex")
+
         create_plot(df_agg)
 
 

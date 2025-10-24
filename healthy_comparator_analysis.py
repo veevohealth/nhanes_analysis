@@ -22,6 +22,7 @@ from utils.preprocessing import (
     filter_age, map_sex, calculate_sbp, process_anti_htn_meds,
     process_statin, process_diabetes, process_smoking
 )
+import matplotlib.ticker as mticker
 
 def get_datasets(suffix: str, config: dict):
     """Returns a dictionary of datasets for the healthy comparator analysis."""
@@ -217,89 +218,54 @@ def create_sbp_plot(df: pd.DataFrame):
     """Creates a line plot of healthy SBP by age and sex."""
     
     sns.set_style("whitegrid")
+    sns.set_context("talk")  # larger base font sizes
     g = sns.FacetGrid(df, col="sex", height=6, aspect=1.2, col_order=['female', 'male'])
-    g.map(sns.lineplot, "age", "healthy_sbp", color='cornflowerblue')
+    g.map(sns.lineplot, "age", "healthy_sbp", color='cornflowerblue', linewidth=2.25)
 
     # Customizing the plot
+    y_min = max(95, float(np.floor(df['healthy_sbp'].min() / 2.5) * 2.5) - 2.5)
+    y_max = float(np.ceil(df['healthy_sbp'].max() / 2.5) * 2.5) + 2.5
     for i, ax in enumerate(g.axes.flat):
         sex = ['Women', 'Men'][i]
-        ax.set_title(f'{sex}')
-        ax.set_xlabel("Age, y")
+        ax.set_title(f'{sex}', fontsize=16)
+        ax.set_xlabel("Age (years)", fontsize=14)
         if i == 0:
-            ax.set_ylabel("Predicted Healthy SBP, mmHg")
+            ax.set_ylabel("Predicted Healthy SBP, mmHg", fontsize=14)
         ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+        ax.set_ylim(y_min, y_max)
+        ax.yaxis.set_major_locator(mticker.MultipleLocator(2.5))
+        # Indicate menopause knot at ~52 y for women panel
+        if i == 0:
+            ax.axvline(52, color='indianred', linestyle='--', linewidth=1.2, alpha=0.8)
+            ax.text(52 + 0.5, y_max - 0.5, 'Spline knot\n(~52 y)', color='indianred',
+                    fontsize=11, va='top')
 
-    g.fig.suptitle("Predicted Healthy SBP by Age and Sex (NHANES 2015-2023)", y=1.03)
+    g.fig.suptitle("Predicted Healthy Systolic Blood Pressure by Age and Sex (NHANES 2015-2023)", y=1.03, fontsize=18)
     
     plt.tight_layout()
-    plt.savefig("healthy_sbp_by_age.png", bbox_inches='tight')
-    print("Plot saved to healthy_sbp_by_age.png")
+    out_root = "healthy_sbp_by_age.png"
+    plt.savefig(out_root, bbox_inches='tight')
+    # Also save into the white paper template media directory if available
+    try:
+        plt.savefig("heart_age_white_paper/media/healthy_sbp_by_age.png", bbox_inches='tight')
+    except Exception:
+        pass
+    print(f"Plot saved to {out_root}")
 
 def create_total_cholesterol_plot(df: pd.DataFrame):
     """Creates a line plot of healthy total cholesterol by age and sex."""
-    
-    sns.set_style("whitegrid")
-    g = sns.FacetGrid(df, col="sex", height=6, aspect=1.2, col_order=['female', 'male'])
-    g.map(sns.lineplot, "age", "healthy_total_cholesterol", color='mediumseagreen')
-
-    # Customizing the plot
-    for i, ax in enumerate(g.axes.flat):
-        sex = ['Women', 'Men'][i]
-        ax.set_title(f'{sex}')
-        ax.set_xlabel("Age, y")
-        if i == 0:
-            ax.set_ylabel("Predicted Healthy Total Cholesterol, mg/dL")
-        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-
-    g.fig.suptitle("Predicted Healthy Total Cholesterol by Age and Sex (NHANES 2015-2023)", y=1.03)
-    
-    plt.tight_layout()
-    plt.savefig("healthy_total_cholesterol_by_age.png", bbox_inches='tight')
-    print("Plot saved to healthy_total_cholesterol_by_age.png")
+    # Disabled per white-paper focus
+    return
 
 def create_hdl_cholesterol_plot(df: pd.DataFrame):
     """Creates a line plot of healthy HDL cholesterol by age and sex."""
-    
-    sns.set_style("whitegrid")
-    g = sns.FacetGrid(df, col="sex", height=6, aspect=1.2, col_order=['female', 'male'])
-    g.map(sns.lineplot, "age", "healthy_hdl_c", color='goldenrod')
-
-    # Customizing the plot
-    for i, ax in enumerate(g.axes.flat):
-        sex = ['Women', 'Men'][i]
-        ax.set_title(f'{sex}')
-        ax.set_xlabel("Age, y")
-        if i == 0:
-            ax.set_ylabel("Predicted Healthy HDL Cholesterol, mg/dL")
-        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-
-    g.fig.suptitle("Predicted Healthy HDL Cholesterol by Age and Sex (NHANES 2015-2023)", y=1.03)
-    
-    plt.tight_layout()
-    plt.savefig("healthy_hdl_cholesterol_by_age.png", bbox_inches='tight')
-    print("Plot saved to healthy_hdl_cholesterol_by_age.png")
+    # Disabled per white-paper focus
+    return
 
 def create_non_hdl_cholesterol_plot(df: pd.DataFrame):
     """Creates a line plot of healthy non-HDL cholesterol by age and sex."""
-    
-    sns.set_style("whitegrid")
-    g = sns.FacetGrid(df, col="sex", height=6, aspect=1.2, col_order=['female', 'male'])
-    g.map(sns.lineplot, "age", "healthy_non_hdl_c", color='darkorchid')
-
-    # Customizing the plot
-    for i, ax in enumerate(g.axes.flat):
-        sex = ['Women', 'Men'][i]
-        ax.set_title(f'{sex}')
-        ax.set_xlabel("Age, y")
-        if i == 0:
-            ax.set_ylabel("Predicted Healthy Non-HDL Cholesterol, mg/dL")
-        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-
-    g.fig.suptitle("Predicted Healthy Non-HDL Cholesterol by Age and Sex (NHANES 2015-2023)", y=1.03)
-    
-    plt.tight_layout()
-    plt.savefig("healthy_non_hdl_cholesterol_by_age.png", bbox_inches='tight')
-    print("Plot saved to healthy_non_hdl_cholesterol_by_age.png")
+    # Disabled per white-paper focus
+    return
 
 def main():
     """Main function to run the analysis."""
