@@ -3,3 +3,4 @@ venv/
 .nhanes_downloader/
 utils/__pycache__/
 heart_age_white_paper/build/
+figures/
