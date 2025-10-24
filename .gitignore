@@ -1,4 +1,4 @@
 venv/
 .venv/
-nhanes_downloader/
+.nhanes_downloader/
 utils/__pycache__/
